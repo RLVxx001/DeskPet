@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+.DS_Store
+*.log
+.cursor/
+testdata/settings.local.json
+testdata/run/
+testdata/run-stress/
+testdata/knowledge-stress/

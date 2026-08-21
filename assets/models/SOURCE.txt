@@ -1,0 +1,3 @@
+avatar.vrm is the three-vrm VRM 1.0 sample:
+
+https://github.com/pixiv/three-vrm/blob/dev/packages/three-vrm/examples/models/VRM1_Constraint_Twist_Sample.vrm

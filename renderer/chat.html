@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>聊天</title>
+  <style>
+    :root {
+      --paper: rgba(250, 246, 239, 0.94);
+      --ink: #2c261f;
+      --muted: #8a8176;
+      --line: rgba(70, 52, 32, 0.1);
+      --user: #3a322b;
+      --accent: #c45c26;
+      --accent-soft: rgba(196, 92, 38, 0.12);
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: transparent;
+      color: var(--ink);
+      font: 13px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .panel {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      margin: 8px;
+      border-radius: 18px;
+      background: var(--paper);
+      box-shadow: 0 18px 40px rgba(40, 28, 16, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.55);
+      overflow: hidden;
+    }
+    .top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding: 14px 16px 4px;
+    }
+    .top h1 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .top nav {
+      display: flex;
+      gap: 10px;
+    }
+    .top button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0;
+      font-size: 12px;
+    }
+    .top button:hover,
+    .top button.active {
+      color: var(--accent);
+    }
+    .hint {
+      padding: 0 16px 10px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    #memory {
+      display: none;
+      max-height: 240px;
+      overflow: auto;
+      margin: 0 16px 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.55);
+      border: 1px solid var(--line);
+    }
+    #memory.open {
+      display: block;
+    }
+    .mem-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .mem-bar button {
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 0;
+    }
+    .mem-sec {
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      margin: 8px 0 4px;
+    }
+    .mem {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 5px 0;
+      font-size: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .mem:last-child {
+      border-bottom: 0;
+    }
+    .mem.old span {
+      color: var(--muted);
+      text-decoration: line-through;
+      text-decoration-thickness: 1px;
+    }
+    .mem .kind {
+      flex: none;
+      font-size: 10px;
+      color: var(--accent);
+      min-width: 2.5em;
+    }
+    .mem input {
+      flex: 1;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      padding: 0;
+      outline: none;
+    }
+    .mem button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0;
+      font-size: 11px;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    #log {
+      flex: 1;
+      overflow: auto;
+      padding: 4px 16px 12px;
+    }
+    #log::-webkit-scrollbar {
+      width: 6px;
+    }
+    #log::-webkit-scrollbar-thumb {
+      background: rgba(70, 52, 32, 0.16);
+      border-radius: 99px;
+    }
+    .msg {
+      margin: 10px 0;
+      max-width: 92%;
+      word-break: break-word;
+      text-wrap: pretty;
+    }
+    .msg.user {
+      margin-left: auto;
+      width: fit-content;
+      padding: 8px 12px;
+      border-radius: 14px 14px 4px 14px;
+      background: var(--user);
+      color: #f7f1e8;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .msg.assistant {
+      color: var(--ink);
+      padding: 2px 0 2px 10px;
+      border-left: 2px solid rgba(196, 92, 38, 0.35);
+    }
+    .msg.assistant p {
+      margin: 0 0 8px;
+    }
+    .msg.assistant p:last-child {
+      margin-bottom: 0;
+    }
+    .msg.assistant ul {
+      margin: 4px 0 10px;
+      padding: 0 0 0 16px;
+    }
+    .msg.assistant li {
+      margin: 4px 0;
+    }
+    .msg.assistant strong {
+      font-weight: 600;
+    }
+    .msg.assistant code {
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: var(--accent-soft);
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+    .msg.status {
+      color: var(--muted);
+      font-size: 11px;
+      padding: 0 0 0 10px;
+      border: 0;
+      letter-spacing: 0.04em;
+    }
+    form {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px 12px;
+      background: rgba(255, 255, 255, 0.35);
+      border-top: 1px solid var(--line);
+    }
+    form input {
+      flex: 1;
+      border: 0;
+      background: rgba(255, 255, 255, 0.7);
+      border-radius: 12px;
+      padding: 9px 12px;
+      outline: none;
+      color: var(--ink);
+    }
+    form input::placeholder {
+      color: #b3a89b;
+    }
+    form button {
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 12px;
+      padding: 0 14px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    form button:hover {
+      filter: brightness(1.05);
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="top">
+      <h1>和桌宠说话</h1>
+      <nav>
+        <button id="memoryBtn" type="button">记得的事</button>
+        <button id="settings" type="button">设置</button>
+        <button id="close" type="button">关闭</button>
+      </nav>
+    </div>
+    <div class="hint">同一段相处。笔记放进知识库就能问。</div>
+    <div id="memory"></div>
+    <div id="log"></div>
+    <form id="form">
+      <input id="text" autocomplete="off" placeholder="说点什么…" />
+      <button type="submit">发送</button>
+    </form>
+  </div>
+  <script src="./chat.js"></script>
+</body>
+</html>

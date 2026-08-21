@@ -1,0 +1,51 @@
+{
+  "name": "deskpet",
+  "version": "0.1.0",
+  "description": "Standalone Mac 3D desktop pet",
+  "main": "electron/main.js",
+  "scripts": {
+    "build:renderer": "node scripts/build-renderer.js",
+    "start": "npm run build:renderer && electron .",
+    "test:agent": "node scripts/live-test.js",
+    "test:stress": "node scripts/stress-test.js",
+    "pack": "npm run build:renderer && electron-builder --mac dir"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "^3.4.4",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.8"
+  },
+  "build": {
+    "appId": "com.deskpet.mac",
+    "productName": "桌宠",
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.entertainment",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "identity": null,
+      "extendInfo": {
+        "LSUIElement": 1
+      }
+    },
+    "directories": {
+      "output": "release"
+    }
+  }
+}

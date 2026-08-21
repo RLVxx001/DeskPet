@@ -1,0 +1,9 @@
+{
+  "baseUrl": "https://api.kimi.com/coding/v1",
+  "model": "k3",
+  "apiKey": "",
+  "knowledgePath": "./testdata/knowledge",
+  "embeddingBaseUrl": "https://llm-gt5z3xwlfx0rhwej.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "embeddingModel": "qwen3.7-text-embedding",
+  "embeddingApiKey": ""
+}

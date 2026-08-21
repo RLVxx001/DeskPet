@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>聊天气泡</title>
+  <style>
+    html, body {
+      margin: 0;
+      background: transparent;
+      overflow: hidden;
+    }
+    #bubble {
+      margin: 6px;
+      padding: 8px 12px;
+      border-radius: 14px 14px 14px 6px;
+      background: rgba(250, 246, 239, 0.94);
+      box-shadow: 0 10px 22px rgba(40, 28, 16, 0.18);
+      border: 1px solid rgba(255, 255, 255, 0.55);
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      color: #2c261f;
+      min-height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="bubble"></div>
+  <script src="./bubble.js"></script>
+</body>
+</html>

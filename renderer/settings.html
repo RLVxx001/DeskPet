@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+  <title>设置</title>
+  <style>
+    :root {
+      --paper: rgba(250, 246, 239, 0.94);
+      --ink: #2c261f;
+      --muted: #8a8176;
+      --line: rgba(70, 52, 32, 0.1);
+      --accent: #c45c26;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: transparent;
+      color: var(--ink);
+      font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    }
+    .panel {
+      margin: 8px;
+      padding: 16px 16px 14px;
+      border-radius: 18px;
+      background: var(--paper);
+      box-shadow: 0 18px 40px rgba(40, 28, 16, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.55);
+      max-height: calc(100% - 16px);
+      overflow: auto;
+    }
+    h1 {
+      font-size: 15px;
+      margin: 0 0 12px;
+      font-weight: 600;
+    }
+    label {
+      display: block;
+      margin: 12px 0 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.7);
+      border-radius: 10px;
+      padding: 8px 10px;
+      color: var(--ink);
+      outline: none;
+    }
+    input:focus {
+      border-color: rgba(196, 92, 38, 0.45);
+    }
+    .row {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 7px 12px;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--ink);
+    }
+    #save {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    .model-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    #modelName,
+    #knowledgePath {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .model-row button {
+      flex: none;
+      font-size: 12px;
+    }
+    .note {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 6px;
+    }
+    code {
+      font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>桌宠设置</h1>
+    <label>当前形象</label>
+    <div class="model-row">
+      <span id="modelName">默认角色</span>
+      <button id="pickModel" type="button">选择 VRM</button>
+      <button id="resetModel" type="button">恢复默认</button>
+    </div>
+    <div class="note">换形象需要一个 .vrm 三维角色文件。一张图变不成能走动的 3D 人。</div>
+    <label>知识库文件夹</label>
+    <div class="model-row">
+      <span id="knowledgePath">默认</span>
+      <button id="pickKnowledge" type="button">选择</button>
+      <button id="openKnowledge" type="button">打开</button>
+    </div>
+    <div class="note">把备忘、项目说明丢进去。聊天时直接问我就行。</div>
+    <label>接口地址</label>
+    <input id="baseUrl" />
+    <label>模型</label>
+    <input id="model" />
+    <label>Embedding 接口</label>
+    <input id="embeddingBaseUrl" />
+    <label>Embedding 模型</label>
+    <input id="embeddingModel" />
+    <label>Embedding API Key</label>
+    <input id="embeddingApiKey" type="password" placeholder="知识库向量检索用" />
+    <div class="note">知识库会切成小段做成向量，和关键词一起召回。用 OpenAI 兼容 embeddings 接口。</div>
+    <div class="note">Kimi Code 会员接口填 <code>https://api.kimi.com/coding/v1</code>，模型 <code>k3</code>。只填到 /coding/ 也会自动补上 /v1。开放平台则用 <code>https://api.moonshot.cn/v1</code>，模型 <code>kimi-k3</code>。</div>
+    <div class="row">
+      <button id="close" type="button">关闭</button>
+      <button id="save" type="button">保存</button>
+    </div>
+  </div>
+  <script src="./settings.js"></script>
+</body>
+</html>
