@@ -1,0 +1,2 @@
+VRMA clips from https://github.com/tk256ailab/vrm-viewer (VRMA/).
+Used as retargetable humanoid motions for DeskPet.

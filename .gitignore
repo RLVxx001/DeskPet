@@ -8,3 +8,6 @@ testdata/settings.local.json
 testdata/run/
 testdata/run-stress/
 testdata/knowledge-stress/
+模型文件/
+Y-原神模型/
+*.rar

@@ -208,19 +208,48 @@ const TOOL_STATUS = {
   web_search: '上网查了查'
 }
 
-const claimedToolsWithoutCall = (reply, usedNames) => {
+const claimedToolsWithoutCall = (reply, usedNames, userText = '') => {
   const t = String(reply || '')
+  const asked = String(userText || '')
   const used = usedNames instanceof Set ? usedNames : new Set(usedNames || [])
   const missing = []
   const rules = [
-    ['read_clipboard', /你复制的是|剪贴板|复制内容是|复制的内容/],
-    ['set_reminder', /会?提醒你|到点叫你|分钟后.{0,12}(喊|叫|提醒)|设好了提醒|已经设了提醒/],
-    ['forget', /已经(忘|删)|忘掉了|不记了|按你说的忘|删掉啦|记忆已经删/],
-    ['pet_action', /我.{0,4}(坐下|坐一会儿|转转|溜达|挥|眯|睡着|去睡|跳)|挥啦|挥手|坐好啦/],
-    ['open_url', /已经打开|帮你打开了|打开啦/]
+    {
+      name: 'read_clipboard',
+      strong: /你复制的是|剪贴板(里|上).{0,8}是|复制内容是|复制的内容是/,
+      weak: /剪贴板|你复制/,
+      topic: /剪贴|复制/
+    },
+    {
+      name: 'set_reminder',
+      strong: /已经(帮你)?设(好了|了)提醒|设好了提醒|提醒已经设好/,
+      weak: /会提醒你|到点(叫|喊|提醒)你|(\d+|半)\s*(分钟|小时)后.{0,10}(喊|叫|提醒)/,
+      topic: /提醒|闹钟|到点|分钟后|小时后|叫醒|叫我|喊我/
+    },
+    {
+      name: 'forget',
+      strong: /已经(忘了|忘掉|删掉|删了)|忘掉了|不记了|按你说的忘|删掉啦|记忆已经删/,
+      weak: /忘了|删掉/,
+      topic: /忘|别记|删掉|不要记/
+    },
+    {
+      name: 'pet_action',
+      strong: /已经(坐下|坐好|睡着|挥手)|坐好啦|挥啦|我(先)?(坐下|坐一会儿|去睡|睡着|眯一会儿)了/,
+      weak: /我(先)?(坐下|坐一会儿|去睡|睡着|眯一会儿|挥手)/,
+      topic: /坐下|坐着|走路|走走|挥|睡|跳|转|溜达|舞|鞠躬/
+    },
+    {
+      name: 'open_url',
+      strong: /已经(帮你)?打开(了|啦)?(网页|链接|浏览器)|帮你打开了/,
+      weak: /打开啦|已经打开/,
+      topic: /打开|网页|链接|浏览/
+    }
   ]
-  for (const [name, re] of rules) {
-    if (re.test(t) && !used.has(name)) missing.push(name)
+  for (const rule of rules) {
+    if (used.has(rule.name)) continue
+    if (rule.strong.test(t) || (rule.weak.test(t) && rule.topic.test(asked))) {
+      missing.push(rule.name)
+    }
   }
   return missing
 }
@@ -1451,7 +1480,7 @@ const createAgent = (ctx) => {
 
       const reply = result.content || '……'
       if (useTools && repairCount < 2 && round < 4) {
-        const missing = claimedToolsWithoutCall(reply, usedToolNames)
+        const missing = claimedToolsWithoutCall(reply, usedToolNames, userText)
         const invented = inventedTokens(reply, groundedText())
         if (missing.length || invented.length) {
           repairCount += 1

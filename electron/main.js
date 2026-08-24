@@ -18,17 +18,19 @@ let idleTimer = null
 let bubbleTimer = null
 let autoWalk = false
 
-const WINDOW_WIDTH = 108
-const WINDOW_HEIGHT = 186
+const WINDOW_WIDTH = 128
+const WINDOW_HEIGHT = 228
 const CHAT_WIDTH = 360
 const CHAT_HEIGHT = 520
 const BUBBLE_WIDTH = 180
 const BUBBLE_HEIGHT = 64
 
 const bundledModelPath = () => path.join(__dirname, '..', 'assets', 'models', 'avatar.vrm')
+const preferredModelPath = () => path.join(__dirname, '..', '模型文件', '1全模型2R2最终版', '胡桃.vrm')
 const customModelPath = () => path.join(dataDir(), 'avatar.vrm')
 const dataDir = () => path.join(app.getPath('userData'), 'deskpet')
 const settingsPath = () => path.join(dataDir(), 'settings.json')
+const localSeedPath = () => path.join(__dirname, '..', 'testdata', 'settings.local.json')
 
 const ensureDataDir = () => {
   fs.mkdirSync(dataDir(), { recursive: true })
@@ -42,7 +44,21 @@ const readJson = (file, fallback) => {
   }
 }
 
-const loadSettings = () => readJson(settingsPath(), DEFAULT_SETTINGS)
+const loadSettings = () => {
+  const stored = readJson(settingsPath(), DEFAULT_SETTINGS)
+  if (stored.apiKey && stored.embeddingApiKey) return stored
+  const seed = readJson(localSeedPath(), {})
+  if (!seed.apiKey && !seed.embeddingApiKey) return stored
+  return {
+    ...stored,
+    baseUrl: stored.baseUrl || seed.baseUrl || DEFAULT_SETTINGS.baseUrl,
+    model: stored.model || seed.model || DEFAULT_SETTINGS.model,
+    apiKey: stored.apiKey || seed.apiKey || '',
+    embeddingBaseUrl: stored.embeddingBaseUrl || seed.embeddingBaseUrl || DEFAULT_SETTINGS.embeddingBaseUrl,
+    embeddingModel: stored.embeddingModel || seed.embeddingModel || DEFAULT_SETTINGS.embeddingModel,
+    embeddingApiKey: stored.embeddingApiKey || seed.embeddingApiKey || ''
+  }
+}
 
 const saveSettings = (next) => {
   ensureDataDir()
@@ -67,6 +83,7 @@ const saveSettings = (next) => {
 const resolveModelPath = () => {
   const custom = loadSettings().modelPath
   if (custom && fs.existsSync(custom)) return custom
+  if (fs.existsSync(preferredModelPath())) return preferredModelPath()
   return bundledModelPath()
 }
 
@@ -75,6 +92,7 @@ const currentModelLabel = () => {
   if (settings.modelPath && fs.existsSync(settings.modelPath)) {
     return settings.modelName || path.basename(settings.modelPath)
   }
+  if (fs.existsSync(preferredModelPath())) return '胡桃'
   return '默认角色'
 }
 
@@ -458,6 +476,7 @@ let chatting = false
 
 app.whenReady().then(() => {
   if (process.platform === 'darwin') app.dock.hide()
+  saveSettings(loadSettings())
 
   petWindow = createPetWindow()
   createTray()
@@ -471,6 +490,17 @@ app.whenReady().then(() => {
       throw new Error('缺少示例角色：assets/models/avatar.vrm')
     }
     return fs.readFileSync(modelPath)
+  })
+
+  ipcMain.handle('pet:load-animations', () => {
+    const dir = path.join(__dirname, '..', 'assets', 'animations')
+    const out = {}
+    if (!fs.existsSync(dir)) return out
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.vrma$/i.test(name)) continue
+      out[name.replace(/\.vrma$/i, '')] = fs.readFileSync(path.join(dir, name))
+    }
+    return out
   })
 
   ipcMain.on('pet:ignore-mouse', (_event, nextIgnore) => {

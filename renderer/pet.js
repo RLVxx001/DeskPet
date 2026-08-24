@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
+import { createVRMAnimationClip, VRMAnimationLoaderPlugin, VRMLookAtQuaternionProxy } from '@pixiv/three-vrm-animation'
 
 const canvas = document.getElementById('view')
 const statusEl = document.getElementById('status')
@@ -68,20 +69,117 @@ let mode = 'idle'
 let walkDir = -1
 let action = null
 let facing = 0
+let baseYaw = 0
 let demoQueue = []
 let demoWait = 0
 let happy = 0
+let playful = 0
+let plotting = 0
+let surprised = 0
 
 const ACTION_TIME = {
-  wave: 1.25,
-  nod: 1.05,
-  bow: 1.7,
-  jump: 0.78,
-  clap: 1.45,
-  stretch: 2.15,
-  think: 2.2,
-  dance: 3.4,
-  spin: 1.55
+  wave: 1.4,
+  nod: 0.95,
+  bow: 1.35,
+  jump: 0.7,
+  clap: 1.2,
+  stretch: 1.7,
+  think: 2.0,
+  dance: 2.8,
+  spin: 1.45
+}
+
+const VRMA_MAP = {
+  idle: { file: 'LookAround', loop: true },
+  sit: { file: 'Relax', loop: true },
+  sleep: { file: 'Sleepy', loop: true },
+  wave: { file: 'Goodbye', loop: false },
+  clap: { file: 'Clapping', loop: false },
+  jump: { file: 'Jump', loop: false },
+  think: { file: 'Thinking', loop: false },
+  stretch: { file: 'Surprised', loop: false },
+  dance: { file: 'Clapping', loop: false }
+}
+
+let vrmaSource = {}
+let mixer = null
+let currentClipAction = null
+let usingVrma = false
+let vrmaName = ''
+
+const parseVrma = (buffer) => new Promise((resolve, reject) => {
+  const loader = new GLTFLoader()
+  loader.register((parser) => new VRMAnimationLoaderPlugin(parser))
+  loader.parse(toArrayBuffer(buffer), '', resolve, reject)
+})
+
+const loadVrmaLibrary = async () => {
+  if (Object.keys(vrmaSource).length || !api?.loadAnimations) return
+  const files = await api.loadAnimations()
+  for (const [name, data] of Object.entries(files || {})) {
+    try {
+      const gltf = await parseVrma(data)
+      const anim = gltf.userData?.vrmAnimations?.[0]
+      if (anim) vrmaSource[name] = anim
+    } catch (error) {
+      console.error('[vrma]', name, error)
+    }
+  }
+}
+
+const stopVrma = () => {
+  if (currentClipAction) {
+    currentClipAction.fadeOut(0.15)
+    currentClipAction.stop()
+  }
+  currentClipAction = null
+  usingVrma = false
+  vrmaName = ''
+  mixer?.stopAllAction()
+}
+
+const playVrma = (name) => {
+  const spec = VRMA_MAP[name]
+  const source = spec && vrmaSource[spec.file]
+  if (!spec || !source || !vrm || !mixer) return false
+  let clip
+  try {
+    clip = createVRMAnimationClip(source, vrm)
+  } catch (error) {
+    console.error('[vrma-clip]', name, error)
+    return false
+  }
+  const next = mixer.clipAction(clip)
+  next.reset()
+  next.enabled = true
+  next.setLoop(spec.loop ? THREE.LoopRepeat : THREE.LoopOnce, spec.loop ? Infinity : 1)
+  next.clampWhenFinished = !spec.loop
+  if (currentClipAction && currentClipAction !== next) currentClipAction.fadeOut(0.2)
+  next.fadeIn(0.2).play()
+  currentClipAction = next
+  usingVrma = true
+  vrmaName = name
+  if (!spec.loop) {
+    const onFinished = (event) => {
+      if (event.action !== next) return
+      mixer.removeEventListener('finished', onFinished)
+      if (vrmaName === name && mode !== 'walk') beginAction('idle')
+    }
+    mixer.addEventListener('finished', onFinished)
+  }
+  return true
+}
+
+const lockRootMotion = () => {
+  const hips = bone('hips')
+  if (hips) {
+    hips.position.x = 0
+    hips.position.z = 0
+  }
+  if (vrm) {
+    vrm.scene.position.x = 0
+    vrm.scene.position.z = 0
+  }
 }
 
 const setStatus = (text) => {
@@ -107,158 +205,297 @@ const toArrayBuffer = (data) => {
   throw new Error('无法读取模型数据')
 }
 
-const bone = (name) => vrm?.humanoid?.getNormalizedBoneNode(name) ?? null
+let hangLeft = [0, 0, 1.35]
+let hangRight = [0, 0, -1.35]
+const handWorld = new THREE.Vector3()
+
+const bone = (name) => (
+  vrm?.humanoid?.getNormalizedBoneNode(name) ??
+  vrm?.humanoid?.getRawBoneNode?.(name) ??
+  null
+)
 
 const setBone = (name, x, y, z) => {
   const node = bone(name)
   if (node) node.rotation.set(x, y, z)
 }
 
+const boneWorldY = (name) => {
+  const node = bone(name)
+  if (!node) return 0
+  node.getWorldPosition(handWorld)
+  return handWorld.y
+}
+
+const measureHandsY = () => {
+  vrm?.update(0)
+  return (boneWorldY('leftHand') + boneWorldY('rightHand')) * 0.5
+}
+
+const calibrateArms = () => {
+  if (!bone('leftUpperArm') || !bone('rightUpperArm')) return
+  const candidates = [
+    [[0, 0, -1.35], [0, 0, 1.35]],
+    [[0, 0, 1.35], [0, 0, -1.35]],
+    [[1.35, 0, 0], [1.35, 0, 0]],
+    [[-1.35, 0, 0], [-1.35, 0, 0]],
+    [[0, 1.35, 0], [0, -1.35, 0]],
+    [[0, -1.35, 0], [0, 1.35, 0]]
+  ]
+  let bestY = Infinity
+  for (const [left, right] of candidates) {
+    setBone('leftUpperArm', left[0], left[1], left[2])
+    setBone('rightUpperArm', right[0], right[1], right[2])
+    setBone('leftLowerArm', 0, 0, 0)
+    setBone('rightLowerArm', 0, 0, 0)
+    const y = measureHandsY()
+    if (y < bestY) {
+      bestY = y
+      hangLeft = left
+      hangRight = right
+    }
+  }
+  applyArmRest(0)
+}
+
+const lerpArm = (from, toward, t) => ([
+  from[0] + (toward[0] - from[0]) * t,
+  from[1] + (toward[1] - from[1]) * t,
+  from[2] + (toward[2] - from[2]) * t
+])
+
+const EXPR_ALIASES = {
+  blink: ['blink', 'Blink'],
+  happy: ['happy', 'Joy', 'Smile'],
+  playful: ['Playful', 'Fun', 'relaxed'],
+  plotting: ['Plotting', 'Gloating', 'Puzzled'],
+  surprised: ['Surprised'],
+  confused: ['Confused', 'Puzzled']
+}
+
+const setExpr = (key, value) => {
+  const expressions = vrm?.expressionManager
+  if (!expressions) return
+  const amount = Math.min(Math.max(value, 0), 1)
+  for (const name of EXPR_ALIASES[key] || [key]) {
+    try {
+      expressions.setValue(name, amount)
+    } catch {}
+  }
+}
+
+const resetExprs = () => {
+  setExpr('happy', 0)
+  setExpr('playful', 0)
+  setExpr('plotting', 0)
+  setExpr('surprised', 0)
+  setExpr('confused', 0)
+}
+
+const setRootY = (y) => {
+  if (!vrm) return
+  vrm.scene.position.y = Math.min(Math.max(y, -0.08), 0.07)
+}
+
+const applyArmRest = (t = 0) => {
+  const breath = Math.sin(t * 1.4) * 0.02
+  setBone('leftUpperArm', hangLeft[0] + breath, hangLeft[1], hangLeft[2])
+  setBone('rightUpperArm', hangRight[0] + breath, hangRight[1], hangRight[2])
+  setBone('leftLowerArm', 0.08, -0.06, 0.02)
+  setBone('rightLowerArm', 0.08, 0.06, -0.02)
+  setBone('leftHand', 0, 0, 0)
+  setBone('rightHand', 0, 0, 0)
+}
+
 const applyIdlePose = (t, lift) => {
-  const breath = Math.sin(t * 1.55)
-  const sway = Math.sin(t * 0.55)
-  setBone('hips', 0.02, sway * 0.045, sway * 0.012)
-  setBone('spine', 0.04 + breath * 0.018, sway * 0.02, 0)
-  setBone('chest', 0.03 + breath * 0.03, 0, 0)
-  setBone('upperChest', breath * 0.012, 0, 0)
-  setBone('leftUpperArm', 0.06, 0.16, -1.22 + breath * 0.03)
-  setBone('rightUpperArm', 0.06, -0.16, 1.22 - breath * 0.03)
-  setBone('leftLowerArm', 0.12, -0.22, 0.08)
-  setBone('rightLowerArm', 0.12, 0.22, -0.08)
-  setBone('leftHand', 0.05, 0.04, 0.06)
-  setBone('rightHand', 0.05, -0.04, -0.06)
-  setBone('leftUpperLeg', 0.02, 0, -0.04 + sway * 0.02)
-  setBone('rightUpperLeg', 0.02, 0, 0.04 - sway * 0.02)
-  setBone('leftLowerLeg', 0.04, 0, 0)
-  setBone('rightLowerLeg', 0.04, 0, 0)
-  if (vrm) vrm.scene.position.y = lift * 0.05
-  shadow.scale.setScalar(1 - lift * 0.18)
-  shadow.material.opacity = 0.18 * (1 - lift * 0.45)
+  const breath = Math.sin(t * 1.45)
+  const sway = Math.sin(t * 0.48)
+  setBone('hips', 0.02, sway * 0.03, 0)
+  setBone('spine', 0.03 + breath * 0.016, sway * 0.015, 0)
+  setBone('chest', 0.02 + breath * 0.02, 0, 0)
+  setBone('upperChest', breath * 0.01, 0, 0)
+  setBone('neck', 0.02, sway * 0.04, 0)
+  setBone('head', 0.03, sway * 0.05, 0)
+  applyArmRest(t)
+  setBone('leftUpperLeg', 0.02, 0, -0.03 + sway * 0.015)
+  setBone('rightUpperLeg', 0.02, 0, 0.03 - sway * 0.015)
+  setBone('leftLowerLeg', 0.03, 0, 0)
+  setBone('rightLowerLeg', 0.03, 0, 0)
+  setRootY(lift * 0.03)
+  shadow.scale.setScalar(1 - lift * 0.12)
+  shadow.material.opacity = 0.18 * (1 - lift * 0.35)
+  if (!action) {
+    playful = 0.04
+    happy = 0.03
+  }
 }
 
 const applyWalkPose = (t) => {
-  const step = t * 7.2
+  const step = t * 6.4
   const swing = Math.sin(step)
-  const bounce = Math.abs(Math.sin(step)) * 0.02
-  setBone('hips', 0.05, 0, swing * 0.05)
-  setBone('spine', 0.06, 0, 0)
-  setBone('chest', 0.04, 0, 0)
-  setBone('leftUpperLeg', swing * 0.55, 0, -0.03)
-  setBone('rightUpperLeg', -swing * 0.55, 0, 0.03)
-  setBone('leftLowerLeg', Math.max(0, -swing) * 0.55, 0, 0)
-  setBone('rightLowerLeg', Math.max(0, swing) * 0.55, 0, 0)
-  setBone('leftUpperArm', 0.08, 0.12, -1.18 - swing * 0.28)
-  setBone('rightUpperArm', 0.08, -0.12, 1.18 - swing * 0.28)
-  setBone('leftLowerArm', 0.18, -0.2, 0.08)
-  setBone('rightLowerArm', 0.18, 0.2, -0.08)
-  if (vrm) vrm.scene.position.y = bounce
-  shadow.scale.setScalar(0.92)
-  shadow.material.opacity = 0.14
+  const bounce = Math.abs(Math.sin(step))
+  setBone('hips', 0.04, 0, swing * 0.03)
+  setBone('spine', 0.05, 0, 0)
+  setBone('chest', 0.03, 0, 0)
+  setBone('neck', 0.02, 0, 0)
+  setBone('head', 0.04, swing * 0.04, 0)
+  setBone('leftUpperLeg', swing * 0.38, 0, -0.03)
+  setBone('rightUpperLeg', -swing * 0.38, 0, 0.03)
+  setBone('leftLowerLeg', Math.max(0, -swing) * 0.4, 0, 0)
+  setBone('rightLowerLeg', Math.max(0, swing) * 0.4, 0, 0)
+  const leftSwing = lerpArm(hangLeft, [0, 0, 0], 0.12 + swing * 0.1)
+  const rightSwing = lerpArm(hangRight, [0, 0, 0], 0.12 - swing * 0.1)
+  setBone('leftUpperArm', leftSwing[0], leftSwing[1], leftSwing[2])
+  setBone('rightUpperArm', rightSwing[0], rightSwing[1], rightSwing[2])
+  setBone('leftLowerArm', 0.12, -0.08, 0.03)
+  setBone('rightLowerArm', 0.12, 0.08, -0.03)
+  setRootY(bounce * 0.012)
+  shadow.scale.setScalar(0.94)
+  shadow.material.opacity = 0.15
 }
 
 const applySitPose = (t) => {
-  const breath = Math.sin(t * 1.4) * 0.02
-  setBone('hips', 0.18, 0, 0)
-  setBone('spine', 0.12 + breath, 0, 0)
-  setBone('chest', 0.08, 0, 0)
-  setBone('leftUpperLeg', 1.15, 0, -0.06)
-  setBone('rightUpperLeg', 1.15, 0, 0.06)
-  setBone('leftLowerLeg', -1.25, 0, 0)
-  setBone('rightLowerLeg', -1.25, 0, 0)
-  setBone('leftUpperArm', 0.2, 0.25, -1.05)
-  setBone('rightUpperArm', 0.2, -0.25, 1.05)
-  setBone('leftLowerArm', 0.35, -0.35, 0.1)
-  setBone('rightLowerArm', 0.35, 0.35, -0.1)
-  if (vrm) vrm.scene.position.y = -0.12
-  shadow.scale.setScalar(0.78)
+  const breath = Math.sin(t * 1.35) * 0.015
+  setBone('hips', 0.12, 0, 0)
+  setBone('spine', 0.08 + breath, 0, 0)
+  setBone('chest', 0.05, 0, 0)
+  setBone('neck', 0.04, 0.06, 0)
+  setBone('head', 0.05, 0.08, 0)
+  setBone('leftUpperLeg', 0.72, 0, -0.04)
+  setBone('rightUpperLeg', 0.72, 0, 0.04)
+  setBone('leftLowerLeg', -0.82, 0, 0)
+  setBone('rightLowerLeg', -0.82, 0, 0)
+  applyArmRest(t)
+  setBone('leftLowerArm', 0.22, -0.16, 0.04)
+  setBone('rightLowerArm', 0.22, 0.16, -0.04)
+  setRootY(-0.06)
+  shadow.scale.setScalar(0.82)
+  happy = 0.06
 }
 
 const applySleepPose = (t) => {
   applySitPose(t)
-  setBone('spine', 0.42, 0.12, 0)
-  setBone('chest', 0.28, 0.08, 0)
-  setBone('leftUpperArm', 0.4, 0.35, -0.7)
-  setBone('rightUpperArm', 0.55, -0.2, 0.55)
-  if (vrm) vrm.scene.position.y = -0.14
+  const snore = Math.sin(t * 1.05)
+  setBone('spine', 0.22, 0.1, 0)
+  setBone('chest', 0.14, 0.05, 0)
+  setBone('neck', 0.16, 0.22, 0.06)
+  setBone('head', 0.2 + snore * 0.02, 0.28, 0.05)
+  applyArmRest(t)
+  setBone('leftLowerArm', 0.28, -0.14, 0.04)
+  setBone('rightLowerArm', 0.32, 0.12, -0.03)
+  setRootY(-0.07)
+  happy = 0.02
+  playful = 0
 }
 
 const applyActionPose = (name, p) => {
-  const ease = Math.sin(Math.min(Math.max(p, 0), 1) * Math.PI)
+  const clamp = Math.min(Math.max(p, 0), 1)
+  const ease = Math.sin(clamp * Math.PI)
   if (name === 'wave') {
-    const swing = Math.sin(p * Math.PI * 6) * 0.5 * ease
-    setBone('rightUpperArm', -0.35 * ease, -0.12, 1.22 - 1.55 * ease)
-    setBone('rightLowerArm', 0.12, 0.15 + swing, -0.08)
-    happy = 0.5 * ease
+    const flap = Math.sin(p * Math.PI * 5) * 0.22 * ease
+    applyArmRest()
+    const raised = lerpArm(hangRight, [0, 0, 0], 0.72 * ease)
+    setBone('neck', 0.03, 0.08 * ease, 0)
+    setBone('head', 0.04, 0.1 * ease, 0)
+    setBone('rightUpperArm', raised[0], raised[1], raised[2])
+    setBone('rightLowerArm', 0.1, 0.06 + flap, -0.04)
+    happy = 0.35 * ease
+    playful = 0.25 * ease
     return
   }
   if (name === 'nod') {
-    setBone('spine', 0.04 + Math.sin(p * Math.PI * 3) * 0.18, 0, 0)
-    setBone('chest', 0.03 + Math.sin(p * Math.PI * 3) * 0.12, 0, 0)
+    const dip = Math.sin(p * Math.PI * 3)
+    applyArmRest()
+    setBone('neck', 0.03 + dip * 0.16, 0, 0)
+    setBone('head', 0.04 + dip * 0.2, 0, 0)
+    happy = 0.16 * ease
     return
   }
   if (name === 'bow') {
-    setBone('hips', 0.12 * ease, 0, 0)
-    setBone('spine', 0.08 + 0.55 * ease, 0, 0)
-    setBone('chest', 0.06 + 0.4 * ease, 0, 0)
-    setBone('leftUpperArm', 0.2 * ease, 0.1, -1.22)
-    setBone('rightUpperArm', 0.2 * ease, -0.1, 1.22)
+    applyArmRest()
+    setBone('hips', 0.08 * ease, 0, 0)
+    setBone('spine', 0.04 + 0.28 * ease, 0, 0)
+    setBone('chest', 0.03 + 0.18 * ease, 0, 0)
+    setBone('neck', 0.06 + 0.12 * ease, 0, 0)
+    setBone('head', 0.08 + 0.12 * ease, 0, 0)
     return
   }
   if (name === 'jump') {
-    const lift = Math.sin(p * Math.PI)
-    setBone('leftUpperLeg', -0.35 * lift, 0, -0.04)
-    setBone('rightUpperLeg', -0.35 * lift, 0, 0.04)
-    setBone('leftLowerLeg', 0.55 * lift, 0, 0)
-    setBone('rightLowerLeg', 0.55 * lift, 0, 0)
-    setBone('leftUpperArm', -0.4 * lift, 0.1, -1.0)
-    setBone('rightUpperArm', -0.4 * lift, -0.1, 1.0)
-    if (vrm) vrm.scene.position.y = 0.22 * lift
-    shadow.scale.setScalar(1 - 0.35 * lift)
+    const lift = Math.sin(clamp * Math.PI)
+    applyArmRest()
+    setBone('leftUpperLeg', -0.18 * lift, 0, -0.03)
+    setBone('rightUpperLeg', -0.18 * lift, 0, 0.03)
+    setBone('leftLowerLeg', 0.28 * lift, 0, 0)
+    setBone('rightLowerLeg', 0.28 * lift, 0, 0)
+    setRootY(0.04 * lift)
+    shadow.scale.setScalar(1 - 0.12 * lift)
+    happy = 0.22 * lift
     return
   }
   if (name === 'clap') {
-    const clap = (Math.sin(p * Math.PI * 8) * 0.5 + 0.5) * ease
-    setBone('leftUpperArm', 0.35 * ease, 0.55 * ease, -0.55)
-    setBone('rightUpperArm', 0.35 * ease, -0.55 * ease, 0.55)
-    setBone('leftLowerArm', 0.2, -0.15 - clap * 0.35, 0.15)
-    setBone('rightLowerArm', 0.2, 0.15 + clap * 0.35, -0.15)
-    happy = 0.4 * ease
+    const clap = (Math.sin(p * Math.PI * 7) * 0.5 + 0.5) * ease
+    applyArmRest()
+    const left = lerpArm(hangLeft, [0.15, 0.25, 0], 0.55 * ease)
+    const right = lerpArm(hangRight, [0.15, -0.25, 0], 0.55 * ease)
+    setBone('leftUpperArm', left[0], left[1], left[2])
+    setBone('rightUpperArm', right[0], right[1], right[2])
+    setBone('leftLowerArm', 0.16, -0.08 - clap * 0.16, 0.04)
+    setBone('rightLowerArm', 0.16, 0.08 + clap * 0.16, -0.04)
+    happy = 0.28 * ease
+    playful = 0.2 * ease
     return
   }
   if (name === 'stretch') {
-    setBone('leftUpperArm', -1.35 * ease, 0.15, -0.35)
-    setBone('rightUpperArm', -1.35 * ease, -0.15, 0.35)
-    setBone('leftLowerArm', 0.15, -0.1, 0)
-    setBone('rightLowerArm', 0.15, 0.1, 0)
-    setBone('spine', -0.08 * ease, 0, 0)
-    setBone('chest', -0.06 * ease, 0, 0)
-    if (vrm) vrm.scene.position.y = 0.03 * ease
+    applyArmRest()
+    const left = lerpArm(hangLeft, [0, 0, 0], 0.45 * ease)
+    const right = lerpArm(hangRight, [0, 0, 0], 0.45 * ease)
+    setBone('leftUpperArm', left[0], left[1], left[2])
+    setBone('rightUpperArm', right[0], right[1], right[2])
+    setBone('spine', -0.05 * ease, 0, 0)
+    setBone('chest', -0.04 * ease, 0, 0)
+    setBone('neck', -0.04 * ease, 0, 0)
+    setRootY(0.015 * ease)
     return
   }
   if (name === 'think') {
-    setBone('rightUpperArm', 0.15, -0.55 * ease, 0.25)
-    setBone('rightLowerArm', 0.9 * ease, 0.55 * ease, -0.2)
-    setBone('spine', 0.08, -0.08 * ease, 0)
-    setBone('chest', 0.05, -0.06 * ease, 0)
+    applyArmRest()
+    const raised = lerpArm(hangRight, [0.2, -0.2, 0], 0.7 * ease)
+    setBone('spine', 0.05, -0.05 * ease, 0)
+    setBone('neck', 0.06, -0.1 * ease, 0)
+    setBone('head', 0.08, -0.16 * ease, 0.04)
+    setBone('rightUpperArm', raised[0], raised[1], raised[2])
+    setBone('rightLowerArm', 0.55 * ease, 0.28 * ease, -0.06)
+    plotting = 0.45 * ease
     return
   }
   if (name === 'dance') {
-    const sway = Math.sin(p * Math.PI * 4)
-    const bounce = Math.abs(Math.sin(p * Math.PI * 8))
-    setBone('hips', 0.08, sway * 0.22, sway * 0.08)
-    setBone('spine', 0.08, sway * 0.12, 0)
-    setBone('leftUpperArm', -0.7 + sway * 0.4, 0.2, -0.7)
-    setBone('rightUpperArm', -0.7 - sway * 0.4, -0.2, 0.7)
-    setBone('leftUpperLeg', bounce * 0.25, 0, -0.08)
-    setBone('rightUpperLeg', (1 - bounce) * 0.25, 0, 0.08)
-    if (vrm) vrm.scene.position.y = bounce * 0.04
-    happy = 0.55
+    const sway = Math.sin(p * Math.PI * 3.2)
+    const step = Math.sin(p * Math.PI * 6.4)
+    applyArmRest()
+    const left = lerpArm(hangLeft, [0, 0, 0], 0.12 + step * 0.08)
+    const right = lerpArm(hangRight, [0, 0, 0], 0.12 - step * 0.08)
+    setBone('hips', 0.04, sway * 0.12, sway * 0.04)
+    setBone('spine', 0.05, sway * 0.08, 0)
+    setBone('chest', 0.03, sway * 0.05, 0)
+    setBone('head', 0.05, -sway * 0.1, 0)
+    setBone('leftUpperArm', left[0], left[1], left[2])
+    setBone('rightUpperArm', right[0], right[1], right[2])
+    setBone('leftUpperLeg', Math.max(0, step) * 0.16, 0, -0.04)
+    setBone('rightUpperLeg', Math.max(0, -step) * 0.16, 0, 0.04)
+    setRootY(Math.abs(step) * 0.01)
+    happy = 0.28
+    playful = 0.22
     return
   }
   if (name === 'spin') {
-    setBone('leftUpperArm', 0.1, 0.2, -1.05)
-    setBone('rightUpperArm', 0.1, -0.2, 1.05)
-    if (vrm) vrm.scene.position.y = 0.02
+    applyArmRest()
+    const left = lerpArm(hangLeft, [0, 0, 0], 0.2 * ease)
+    const right = lerpArm(hangRight, [0, 0, 0], 0.2 * ease)
+    setBone('leftUpperArm', left[0], left[1], left[2])
+    setBone('rightUpperArm', right[0], right[1], right[2])
+    setBone('head', 0.05, 0, 0)
+    setRootY(0.012 * ease)
+    happy = 0.2 * ease
   }
 }
 
@@ -267,27 +504,45 @@ const beginAction = (name) => {
     mode = 'idle'
     action = null
     happy = 0
+    playful = 0
+    plotting = 0
+    surprised = 0
+    if (!playVrma('idle')) stopVrma()
     return
   }
-  if (name === 'walk' || name === 'sit' || name === 'sleep') {
+  if (name === 'walk') {
     mode = name
     action = null
     happy = 0
+    playful = 0
+    plotting = 0
+    surprised = 0
+    stopVrma()
+    return
+  }
+  if (name === 'sit' || name === 'sleep') {
+    mode = name
+    action = null
+    happy = 0
+    playful = 0
+    plotting = 0
+    surprised = 0
+    if (!playVrma(name)) stopVrma()
     return
   }
   if (name === 'demo') {
     demoQueue = [
-      ['wave', 1.4],
-      ['nod', 1.15],
-      ['bow', 1.8],
-      ['jump', 1.0],
-      ['clap', 1.55],
-      ['stretch', 2.25],
-      ['think', 2.25],
-      ['dance', 3.5],
-      ['spin', 1.65],
-      ['sit', 2.1],
-      ['sleep', 2.3],
+      ['wave', 1.5],
+      ['nod', 1.05],
+      ['bow', 1.45],
+      ['jump', 0.85],
+      ['clap', 1.3],
+      ['stretch', 1.8],
+      ['think', 2.1],
+      ['dance', 2.9],
+      ['spin', 1.55],
+      ['sit', 2.0],
+      ['sleep', 2.2],
       ['idle', 0.3]
     ]
     const first = demoQueue.shift()
@@ -296,6 +551,10 @@ const beginAction = (name) => {
     return
   }
   mode = 'idle'
+  if (playVrma(name)) {
+    action = null
+    return
+  }
   action = { name, t: 0, duration: ACTION_TIME[name] || 1.2 }
 }
 
@@ -307,14 +566,14 @@ const framePet = () => {
   box.getSize(boxSize)
   box.getCenter(boxCenter)
 
-  const bottom = box.min.y - boxSize.y * 0.03
-  const top = box.max.y + boxSize.y * 0.1
+  const bottom = box.min.y - boxSize.y * 0.04
+  const top = box.max.y + boxSize.y * 0.18
   const height = Math.max(top - bottom, 0.8)
-  const width = Math.max(boxSize.x * 1.25, 0.4)
+  const width = Math.max(boxSize.x * 1.2, 0.4)
   const halfFov = THREE.MathUtils.degToRad(camera.fov * 0.5)
   const distH = (height / 2) / Math.tan(halfFov)
   const distW = (width / 2) / Math.tan(halfFov) / Math.max(camera.aspect, 0.1)
-  const dist = Math.max(distH, distW, 1.8) * 1.04
+  const dist = Math.max(distH, distW, 1.8) * 1.12
   const lookY = (top + bottom) / 2
 
   camera.near = 0.1
@@ -334,9 +593,9 @@ const updateBlink = (dt) => {
     const duration = 0.14
     const phase = Math.min(blinkT / duration, 1)
     const value = phase < 0.5 ? phase * 2 : (1 - phase) * 2
-    expressions.setValue('blink', value)
+    setExpr('blink', value)
     if (phase >= 1) {
-      expressions.setValue('blink', 0)
+      setExpr('blink', 0)
       if (doubleBlink) {
         doubleBlink = false
         blinkT = 0
@@ -435,17 +694,23 @@ const animate = () => {
   const lift = dragging ? 1 : 0
 
   if (vrm) {
-    if (mode === 'walk') applyWalkPose(time)
+    if (usingVrma && mixer) {
+      mixer.update(dt)
+      lockRootMotion()
+    } else if (mode === 'walk') applyWalkPose(time)
     else if (mode === 'sit') applySitPose(time)
     else if (mode === 'sleep') applySleepPose(time)
     else applyIdlePose(time, lift)
 
-    if (action) {
+    if (!usingVrma && action) {
       action.t += dt
       applyActionPose(action.name, action.t / action.duration)
       if (action.t >= action.duration) {
         action = null
         happy = 0
+        playful = 0
+        plotting = 0
+        surprised = 0
       }
     }
 
@@ -463,8 +728,14 @@ const animate = () => {
       const wantFace = mode === 'walk' ? (walkDir > 0 ? -0.9 : 0.9) : 0
       facing += (wantFace - facing) * (1 - Math.exp(-6 * dt))
     }
-    vrm.scene.rotation.y = facing
-    vrm.expressionManager?.setValue('happy', happy)
+    vrm.scene.rotation.y = baseYaw + facing
+    if (!usingVrma) {
+      resetExprs()
+      setExpr('happy', happy)
+      setExpr('playful', playful)
+      setExpr('plotting', plotting)
+      setExpr('surprised', surprised)
+    }
     updateBlink(dt)
     updateLookTarget(dt, lastPointerX, lastPointerY)
     vrm.update(dt)
@@ -474,6 +745,8 @@ const animate = () => {
 }
 
 const disposeVrm = () => {
+  stopVrma()
+  mixer = null
   if (!vrm) return
   scene.remove(vrm.scene)
   vrm.scene.traverse((obj) => {
@@ -486,6 +759,7 @@ const disposeVrm = () => {
 
 const loadVRM = async () => {
   if (!api) throw new Error('桌宠接口不可用，请用应用窗口打开')
+  await loadVrmaLibrary()
   const buffer = toArrayBuffer(await api.loadModel())
   const loader = new GLTFLoader()
   loader.register((parser) => new VRMLoaderPlugin(parser))
@@ -501,20 +775,34 @@ const loadVRM = async () => {
   VRMUtils.combineSkeletons(gltf.scene)
   if (VRMUtils.combineMorphs) VRMUtils.combineMorphs(next)
   if (VRMUtils.rotateVRM0) VRMUtils.rotateVRM0(next)
+  baseYaw = next.scene.rotation.y || 0
 
   next.scene.traverse((obj) => {
     obj.frustumCulled = false
   })
 
+  if (next.lookAt) {
+    const proxy = new VRMLookAtQuaternionProxy(next.lookAt)
+    proxy.name = 'lookAtQuaternionProxy'
+    next.scene.add(proxy)
+  }
+
   disposeVrm()
   scene.add(next.scene)
   next.lookAt.target = lookAtTarget
   vrm = next
+  mixer = new THREE.AnimationMixer(next.scene)
   facing = 0
   mode = 'idle'
   action = null
+  happy = 0
+  playful = 0
+  plotting = 0
+  surprised = 0
+  calibrateArms()
   resize()
   framePet()
+  if (!playVrma('idle')) stopVrma()
 }
 
 canvas.addEventListener('pointermove', (event) => {

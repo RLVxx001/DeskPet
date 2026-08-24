@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('deskPet', {
   loadModel: () => ipcRenderer.invoke('pet:load-model'),
+  loadAnimations: () => ipcRenderer.invoke('pet:load-animations'),
   setIgnoreMouse: (ignore) => ipcRenderer.send('pet:ignore-mouse', ignore),
   moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', { dx, dy }),
   quit: () => ipcRenderer.send('pet:quit'),
