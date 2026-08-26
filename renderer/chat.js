@@ -70,10 +70,18 @@ const render = (state) => {
   log.scrollTop = log.scrollHeight
 }
 
+const CARD_LABELS = {
+  identity: '身份',
+  preference: '偏好',
+  agreement: '约定',
+  project: '项目',
+  episode: '近况'
+}
+
 const renderMemory = (data) => {
   const items = data?.items || []
   const slots = data?.slots || []
-  const liveNotes = items.filter((item) => item.kind !== 'profile' && !item.superseded)
+  const liveCards = items.filter((item) => !item.superseded && !item.slot)
   const oldItems = items.filter((item) => item.superseded)
   memoryBox.innerHTML = ''
 
@@ -81,7 +89,7 @@ const renderMemory = (data) => {
   bar.className = 'mem-bar'
   const hint = document.createElement('span')
   hint.className = 'empty'
-  hint.textContent = '核心印象会常驻，约定按需要翻出。'
+  hint.textContent = '人设常驻。其余按卡片记现行说法。'
   const compact = document.createElement('button')
   compact.type = 'button'
   compact.textContent = '整理一下'
@@ -106,19 +114,41 @@ const renderMemory = (data) => {
     memoryBox.appendChild(sec)
   }
 
-  const addRow = (item, kindLabel) => {
+  const addSlotRow = (slot) => {
     const row = document.createElement('div')
-    row.className = 'mem' + (item.superseded ? ' old' : '')
+    row.className = 'mem'
+    const kind = document.createElement('span')
+    kind.className = 'kind'
+    kind.textContent = slot.label
+    const field = document.createElement('input')
+    field.value = slot.value || ''
+    field.placeholder = '还没记下'
+    field.addEventListener('change', async () => {
+      const next = await api.updateCore(slot.key, field.value)
+      renderMemory(next)
+    })
+    row.append(kind, field)
+    memoryBox.appendChild(row)
+  }
+
+  const addCard = (item, kindLabel) => {
+    const card = document.createElement('div')
+    card.className = 'card' + (Date.now() - Number(item.ts || 0) < 120000 ? ' fresh' : '')
+    const top = document.createElement('div')
+    top.className = 'card-top'
     const kind = document.createElement('span')
     kind.className = 'kind'
     kind.textContent = kindLabel
-    const field = document.createElement('input')
-    field.value = item.text
-    field.readOnly = Boolean(item.superseded)
-    field.addEventListener('change', async () => {
-      const next = await api.updateMemory(item.id, field.value)
-      renderMemory(next)
-    })
+    const title = document.createElement('span')
+    title.className = 'title'
+    title.textContent = item.title || item.summary || '记忆'
+    top.append(kind, title)
+    if (Date.now() - Number(item.ts || 0) < 120000 && !item.superseded) {
+      const fresh = document.createElement('span')
+      fresh.className = 'fresh-mark'
+      fresh.textContent = '刚记下'
+      top.append(fresh)
+    }
     const del = document.createElement('button')
     del.type = 'button'
     del.textContent = item.superseded ? '删掉' : '忘掉'
@@ -126,43 +156,56 @@ const renderMemory = (data) => {
       const next = await api.removeMemory(item.id)
       renderMemory(next)
     })
-    row.append(kind, field, del)
-    memoryBox.appendChild(row)
+    top.append(del)
+    const field = document.createElement('input')
+    field.className = 'body'
+    field.value = item.text || item.summary || ''
+    field.readOnly = Boolean(item.superseded)
+    field.addEventListener('change', async () => {
+      const next = await api.updateMemory(item.id, field.value)
+      renderMemory(next)
+    })
+    card.append(top, field)
+    if (Array.isArray(item.tags) && item.tags.length) {
+      const tags = document.createElement('div')
+      tags.className = 'card-tags'
+      tags.textContent = item.tags.join(' · ')
+      card.append(tags)
+    }
+    memoryBox.appendChild(card)
   }
 
   addSection('核心印象')
   if (slots.length) {
-    for (const slot of slots) {
-      const row = document.createElement('div')
-      row.className = 'mem'
-      const kind = document.createElement('span')
-      kind.className = 'kind'
-      kind.textContent = slot.label
-      const field = document.createElement('input')
-      field.value = slot.value || ''
-      field.placeholder = '还没记下'
-      field.addEventListener('change', async () => {
-        const next = await api.updateCore(slot.key, field.value)
-        renderMemory(next)
-      })
-      row.append(kind, field)
-      memoryBox.appendChild(row)
-    }
+    for (const slot of slots) addSlotRow(slot)
   }
 
-  addSection('约定')
-  if (!liveNotes.length) {
+  const groups = [
+    ['identity', '身份'],
+    ['preference', '偏好'],
+    ['agreement', '约定'],
+    ['project', '项目'],
+    ['episode', '近况']
+  ]
+  let anyCard = false
+  for (const [kind, label] of groups) {
+    const rows = liveCards.filter((item) => (item.kind || 'agreement') === kind)
+    if (!rows.length) continue
+    anyCard = true
+    addSection(label)
+    for (const item of rows) addCard(item, CARD_LABELS[item.kind] || label)
+  }
+  if (!anyCard) {
+    addSection('卡片')
     const empty = document.createElement('div')
     empty.className = 'empty'
-    empty.textContent = '还没有约定。稳定的事我会自己记下。'
+    empty.textContent = '还没有卡片。稳定的事我会自己收进来。'
     memoryBox.appendChild(empty)
-  } else {
-    for (const item of liveNotes) addRow(item, '约定')
   }
 
   if (oldItems.length) {
     addSection('已经改口的')
-    for (const item of oldItems) addRow(item, item.kind === 'profile' ? '身份' : '约定')
+    for (const item of oldItems) addCard(item, CARD_LABELS[item.kind] || '旧卡')
   }
 }
 

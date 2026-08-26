@@ -7,6 +7,7 @@
     "build:renderer": "node scripts/build-renderer.js",
     "start": "npm run build:renderer && electron .",
     "test:agent": "node scripts/live-test.js",
+    "test:memory": "node scripts/memory-card-test.js",
     "test:stress": "node scripts/stress-test.js",
     "pack": "npm run build:renderer && electron-builder --mac dir"
   },

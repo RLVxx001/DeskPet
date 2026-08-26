@@ -69,7 +69,8 @@ const embedTexts = async (settings, texts) => {
   const list = (Array.isArray(texts) ? texts : [texts]).map((item) => String(item || '').slice(0, 6000))
   if (!list.length) return []
   const apiKey = String(settings.embeddingApiKey || '').trim()
-  const model = String(settings.embeddingModel || 'qwen3.7-text-embedding').trim()
+  const rawModel = String(settings.embeddingModel || 'qwen3.7-text-embedding').trim()
+  const model = /^qwen3\.?7[-_]?text[-_]?embedding$/i.test(rawModel) ? 'qwen3.7-text-embedding' : rawModel
   const baseUrl = String(settings.embeddingBaseUrl || '').trim()
   if (!apiKey || !baseUrl) throw new Error('还没填 embedding 接口')
   const url = toEmbeddingsUrl(baseUrl)

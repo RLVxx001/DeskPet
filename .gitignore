@@ -7,6 +7,7 @@ release/
 testdata/settings.local.json
 testdata/run/
 testdata/run-stress/
+testdata/run-cards/
 testdata/knowledge-stress/
 模型文件/
 Y-原神模型/

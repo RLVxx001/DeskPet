@@ -50,8 +50,9 @@ userData 里还没有 Key 时，启动会读这个文件。
 
 ## 用什么
 
-- **说话**：点桌宠或托盘打开聊天窗。同一段对话会留下来；稳定事实会记进记忆，可在「记得的事」里改或忘掉。
-- **知识库**：把 `.md` / `.txt` 丢进设置里选的文件夹，聊天时可以直接问里面的内容。
+- **说话**：点桌宠或托盘打开聊天窗。同一段对话会留下来。
+- **记忆卡片**：稳定事实会收成卡（身份 / 偏好 / 约定 / 项目 / 近况），不是聊天流水账。五个核心槽固定：称呼、住址、职业、口味、相处；其余卡名由整理时起。报身份或约定会马上写；闲聊攒几句或关掉聊天窗再整理。可在「记得的事」里改或忘掉。知识库里的 markdown 不会写成记忆卡。
+- **知识库**：把 `.md` / `.txt` 丢进设置里选的文件夹。聊天时按语义检索，回答会提到来源文件名。这是文件，不是对你的记忆。
 - **形象**：只支持 `.vrm`。设置或托盘「换形象」选文件。仓库自带 `assets/models/avatar.vrm`（three-vrm 示例）。如果本地还有 `模型文件/1全模型2R2最终版/胡桃.vrm`，启动会优先用它。
 - **动作**：`assets/animations/*.vrma`，来自 [vrm-viewer](https://github.com/tk256ailab/vrm-viewer)。没有对应 clip 的动作会退回程序摆姿势。
 
@@ -82,8 +83,15 @@ testdata/            本地 Key 示例、示例笔记
 需要先有 `testdata/settings.local.json`。
 
 ```bash
+npm run test:memory   # 记忆卡规则（不打 API）
 npm run test:agent    # 对 agent 走一轮真实对话
 npm run test:stress   # 压记忆 / 检索
+```
+
+联网测完整聊天记忆（需要 Key）：
+
+```bash
+node scripts/memory-live-test.js
 ```
 
 ## 不要提交

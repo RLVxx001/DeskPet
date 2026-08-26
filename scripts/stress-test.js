@@ -321,16 +321,16 @@ const runMemoryUnit = async (agent) => {
   const mixed = await agent.recallMemory('方案什么时候交')
   check('mem-recall-note', 'memory', /2026-08-27|截止日期/.test(String(mixed)), mixed)
   for (let i = 0; i < 12; i++) await agent.addMemory(`临时备忘 ${i} 今天天气一般`, 'note')
-  check('mem-many-notes', 'memory', memoryItems().filter((item) => item.kind === 'note').length >= 10, memoryItems().length)
+  check('mem-many-notes', 'memory', memoryItems().filter((item) => item.kind === 'note' || item.kind === 'agreement').length >= 10, memoryItems().length)
   await agent.addMemory('称呼用户为周周', 'profile', { slot: 'name' })
   await agent.addMemory('用户希望被称为周周', 'profile', { slot: 'name' })
-  const liveNames = memoryItems().filter((item) => item.kind === 'profile' && !item.superseded && item.slot === 'name')
+  const liveNames = memoryItems().filter((item) => !item.superseded && item.slot === 'name')
   const core = read(path.join(dataDirPath, 'memory.json'), { core: {} }).core || {}
   check('mem-slot-one', 'memory', liveNames.length === 1, liveNames.map((item) => item.text).join(' | '))
   check('mem-core-name', 'memory', /周周/.test(String(core.name || '')), JSON.stringify(core))
   await agent.compactMemories('manual')
   const afterCompact = read(path.join(dataDirPath, 'memory.json'), { core: {}, items: [] })
-  const liveProfiles = (afterCompact.items || []).filter((item) => item.kind === 'profile' && !item.superseded)
+  const liveProfiles = (afterCompact.items || []).filter((item) => !item.superseded && (item.kind === 'profile' || item.kind === 'identity' || item.slot))
   check('mem-compact-core', 'memory', /周周/.test(String(afterCompact.core?.name || '')) || liveProfiles.some((item) => /周周/.test(item.text)), JSON.stringify(afterCompact.core))
 }
 
@@ -493,7 +493,7 @@ const runLive = async (agent) => {
   await sleep(6000)
   const coreNick = read(path.join(dataDirPath, 'memory.json'), { core: {} }).core || {}
   check('live-core-nick', 'live', /阿周/.test(String(coreNick.name || '')) || /阿周/.test(liveMem()), JSON.stringify(coreNick))
-  const liveNameCount = memoryItems().filter((item) => !item.superseded && (item.slot === 'name' || (item.kind === 'profile' && !item.slot && /称呼|叫我|被称为/.test(item.text)))).length
+  const liveNameCount = memoryItems().filter((item) => !item.superseded && (item.slot === 'name' || ((item.kind === 'profile' || item.kind === 'identity') && !item.slot && /称呼|叫我|被称为/.test(item.text)))).length
   check('live-name-not-fragmented', 'live', liveNameCount <= 3, `liveNames=${liveNameCount} ${liveMem()}`)
 
   const longUser = await send(agent, `帮我看下笔记，${'项目很急，'.repeat(40)}青雀是什么意思？`)

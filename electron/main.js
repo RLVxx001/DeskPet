@@ -540,14 +540,17 @@ app.whenReady().then(() => {
 
   ipcMain.on('pet:open-chat', () => showChat())
   ipcMain.on('pet:open-settings', () => showSettings())
-  ipcMain.on('chat:close', () => chatWindow?.hide())
+  ipcMain.on('chat:close', () => {
+    chatWindow?.hide()
+    agent.flushMemories('close').catch((error) => console.error('[memory-flush]', error.message))
+  })
   ipcMain.on('settings:close', () => settingsWindow?.hide())
   ipcMain.on('pet:quit', () => app.quit())
 
   ipcMain.handle('chat:get', () => ({ messages: agent.loadChat() }))
   ipcMain.handle('memory:get', () => agent.getMemory())
   ipcMain.handle('memory:remove', (_event, id) => agent.removeMemory(String(id || '')))
-  ipcMain.handle('memory:update', (_event, payload) => agent.updateMemory(String(payload?.id || ''), String(payload?.text || '')))
+  ipcMain.handle('memory:update', (_event, payload) => agent.updateMemory(String(payload?.id || ''), String(payload?.text || ''), { human: true }))
   ipcMain.handle('memory:core', (_event, payload) => agent.updateCore(String(payload?.slot || ''), String(payload?.text || '')))
   ipcMain.handle('memory:compact', () => agent.compactMemories('manual'))
   ipcMain.handle('knowledge:info', () => agent.knowledgeInfo())

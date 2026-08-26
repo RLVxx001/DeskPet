@@ -15,22 +15,27 @@ const DEFAULT_SETTINGS = {
 }
 
 const EXTRACT_PROMPT = [
-  '你在维护桌宠对用户的长期记忆。对照已有现行记忆，只处理用户亲口说的稳定事实。',
-  '包括：姓名/称呼、住址、职业、口味习惯、相处方式、用户明确说自己在做的项目、双方约定或截止日期。',
-  '不要写入：寒暄、一时情绪、世界知识、这次问的技术问题、工具过程、提醒/闹钟、笔记/文件里的内容。',
-  '核心槽 slot：name称呼、city住址、job职业、drink口味、vibe相处。对得上就填 slot。',
-  '同一主题已有现行条目就 update，不要 add 近重复。改口用 update。用户要忘掉用 delete。',
+  '你在维护桌宠的记忆卡片。对照已有目录，只处理用户亲口说的稳定事实。',
+  '一张卡一件事，写现行说法，不要在卡里追加流水账。',
+  'kind 只能是 identity身份 / preference偏好 / agreement约定 / project项目 / episode近况。',
+  '核心槽 slot：name称呼、city住址、job职业、drink口味、vibe相处。对得上就填 slot，kind 用 identity 或 preference。',
+  '填 slot 时 text 要短：称呼只写名字，住址只写城市，不要写成完整句子。',
+  'title 由你起，短，像卡名；同类已有卡就 update，不要新建近重复。改口用 update。用户要忘掉用 delete。',
+  '不要写入：寒暄、一时情绪、世界知识、这次问的技术问题、工具过程、提醒/闹钟、笔记原文、知识库文件名、验收点。对话里出现「来自某.md」的内容当笔记，不当记忆。',
+  '截止日期、答应过的事用 agreement，正在做的事用 project。',
+  '普通闲聊不要硬写卡。episode 最多 1 张，概括这几轮在聊什么，带日期。',
   '最多 4 个动作。没有就空数组。',
-  '只输出 JSON：{"ops":[{"action":"add或update或delete","id":"已有id可空","text":"不超过40字","kind":"profile或note","slot":"name或city或job或drink或vibe或空"}]}'
+  '只输出 JSON：{"ops":[{"action":"add或update或delete","id":"已有id可空","kind":"identity或preference或agreement或project或episode","title":"不超过16字","tags":["标签"],"summary":"不超过28字","text":"不超过80字","slot":"name或city或job或drink或vibe或空","due":"截止日期可空"}]}'
 ].join('')
 
 const COMPACT_PROMPT = [
-  '你在整理桌宠的长期记忆。目标是更少、更准的现行事实，不要编造新信息。',
+  '你在整理桌宠的记忆卡片。目标是更少、更准的现行事实，不要编造。',
   '核心槽：name称呼 city住址 job职业 drink口味 vibe相处。填现行值，没有就空字符串。',
-  '合并近重复；矛盾留最新；旧说法不要删光，用 delete 以外的方式——系统会把未再出现的旧条标作废。',
-  '带 humanEdit 的条目是用户刚在面板改过的，不要改回旧称呼或旧住址。',
-  '独有截止日期、唯一约定必须保留。笔记知识不要写进来。',
-  '只输出 JSON：{"core":{"name":"","city":"","job":"","drink":"","vibe":"","extra":[]},"ops":[{"action":"add或update或delete","id":"","text":"","kind":"profile或note","slot":""}]}'
+  '合并近重复；矛盾留最新；旧说法不要删光，系统会把未再出现的旧卡标作废。',
+  '带 humanEdit 的卡是用户刚在面板改过的，不要改回。',
+  '约定看截止日期，过期标在 text 里说明，不要因为久未提到就删。情景卡只留最近的。',
+  '笔记知识不要写进来。',
+  '只输出 JSON：{"core":{"name":"","city":"","job":"","drink":"","vibe":"","extra":[]},"ops":[{"action":"add或update或delete","id":"","kind":"","title":"","tags":[],"summary":"","text":"","slot":"","due":""}]}'
 ].join('')
 
 const CORE_SLOTS = ['name', 'city', 'job', 'drink', 'vibe']
@@ -41,6 +46,17 @@ const CORE_LABELS = {
   drink: '口味',
   vibe: '相处'
 }
+const CARD_KINDS = ['identity', 'preference', 'agreement', 'project', 'episode']
+const CARD_LABELS = {
+  identity: '身份',
+  preference: '偏好',
+  agreement: '约定',
+  project: '项目',
+  episode: '近况'
+}
+const CATALOG_INJECT_LIMIT = 24
+const MEMORY_FLUSH_TURNS = 6
+const EPISODE_KEEP = 12
 
 const emptyCore = () => ({ name: '', city: '', job: '', drink: '', vibe: '', extra: [] })
 
@@ -70,7 +86,7 @@ const TOOLS = [
         type: 'object',
         properties: {
           text: { type: 'string', description: '要记住的短句' },
-          kind: { type: 'string', enum: ['profile', 'note'], description: 'profile=身份偏好，note=事件约定' }
+          kind: { type: 'string', enum: ['identity', 'preference', 'agreement', 'project', 'episode', 'profile', 'note'], description: 'identity身份 preference偏好 agreement约定 project项目 episode近况' }
         },
         required: ['text']
       }
@@ -402,7 +418,90 @@ const recencyWeight = (ts, halfLifeDays) => {
   return Math.pow(0.5, age / Math.max(1, halfLifeDays))
 }
 
-const wantsHistory = (query) => /以前|之前|当时|原来|曾经/.test(String(query || ''))
+const wantsHistory = (query) => /以前|之前|当时|原来|曾经|上次|昨天/.test(String(query || ''))
+
+const needsImmediateMemory = (text) => {
+  const t = String(text || '').trim()
+  if (!t || t.length < 2) return false
+  if (/^(你好|嗨|在吗|谢谢|嗯+|好的|哦+|👋)$/i.test(t)) return false
+  return /记住|忘掉|忘记|别记|不要记|叫我|我叫(?!什么)|我姓|我.{0,6}住(?!哪)|搬(去|到)|截止日期|截止|下周三?要|以后都|以后别|不(太)?喝|约定|答应过/.test(t)
+}
+
+const normalizeCardKind = (kind, slot) => {
+  if (CORE_SLOTS.includes(slot)) {
+    return slot === 'drink' || slot === 'vibe' ? 'preference' : 'identity'
+  }
+  if (CARD_KINDS.includes(kind)) return kind
+  if (kind === 'profile') return 'identity'
+  if (kind === 'note') return 'agreement'
+  return 'agreement'
+}
+
+const inferCardTitle = (text, kind, slot) => {
+  if (slot && CORE_LABELS[slot]) return CORE_LABELS[slot]
+  const raw = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!raw) return CARD_LABELS[kind] || '记忆'
+  return raw.slice(0, 16)
+}
+
+const migrateMemoryItem = (item) => {
+  const row = { ...(item || {}) }
+  const slot = CORE_SLOTS.includes(row.slot) ? row.slot : ''
+  const kind = normalizeCardKind(row.kind, slot)
+  const text = String(row.text || '').trim()
+  const title = String(row.title || '').trim() || inferCardTitle(text, kind, slot)
+  const summary = String(row.summary || '').trim() || text.slice(0, 28)
+  const tags = Array.isArray(row.tags) ? row.tags.map((tag) => String(tag || '').trim()).filter(Boolean).slice(0, 4) : []
+  if (slot && !tags.includes(CORE_LABELS[slot])) tags.unshift(CORE_LABELS[slot])
+  return {
+    ...row,
+    kind,
+    slot,
+    title: title.slice(0, 16),
+    summary: summary.slice(0, 40),
+    text: text.slice(0, 240),
+    tags
+  }
+}
+
+const cardSearchText = (item) => [
+  item.title,
+  item.summary,
+  item.text,
+  ...(Array.isArray(item.tags) ? item.tags : []),
+  CARD_LABELS[item.kind] || '',
+  CORE_LABELS[item.slot] || ''
+].filter(Boolean).join(' ')
+
+const formatCardLine = (item) => {
+  const label = CARD_LABELS[item.kind] || '记忆'
+  const title = String(item.title || '').trim() || inferCardTitle(item.text, item.kind, item.slot)
+  const body = String(item.summary || item.text || '').replace(/\s+/g, ' ').trim()
+  return `- [${label}] ${title}：${body}`
+}
+
+const cardRecencyMultiplier = (item, query, now = Date.now()) => {
+  const kind = normalizeCardKind(item.kind, item.slot)
+  if (wantsHistory(query)) return 1
+  if (kind === 'identity' || kind === 'preference') return 1
+  if (kind === 'agreement') {
+    const due = Number(item.dueAt || 0)
+    if (due && due < now) return 1.08
+    return 1
+  }
+  if (kind === 'project') return 0.75 + 0.25 * recencyWeight(item.ts, 90)
+  if (kind === 'episode') return recencyWeight(item.ts, 10)
+  return 1
+}
+
+const memoryRankScore = (item, query, semantic, now = Date.now()) => {
+  const lexical = scoreText(cardSearchText(item), query) / 12
+  const base = Math.max(lexical, Number(semantic) || 0)
+  const recency = cardRecencyMultiplier(item, query, now)
+  const importance = item.kind === 'identity' || item.slot ? 1.2 : item.kind === 'agreement' ? 1.15 : 1
+  const live = item.superseded && !wantsHistory(query) ? 0.12 : 1
+  return base * recency * importance * live
+}
 
 const createAgent = (ctx) => {
   const chatPath = () => path.join(ctx.dataDir(), 'chat.json')
@@ -423,10 +522,11 @@ const createAgent = (ctx) => {
   const loadMemory = () => {
     const data = readJson(memoryPath(), { items: [], core: emptyCore() })
     return {
-      items: Array.isArray(data.items) ? data.items : [],
+      items: (Array.isArray(data.items) ? data.items : []).map(migrateMemoryItem),
       core: { ...emptyCore(), ...(data.core && typeof data.core === 'object' ? data.core : {}) },
       lastHumanEdit: Number(data.lastHumanEdit || 0),
-      lastCompact: Number(data.lastCompact || 0)
+      lastCompact: Number(data.lastCompact || 0),
+      pendingTurns: Number(data.pendingTurns || 0)
     }
   }
 
@@ -436,7 +536,8 @@ const createAgent = (ctx) => {
       core: { ...emptyCore(), ...(memory.core || {}) },
       items: Array.isArray(memory.items) ? memory.items : [],
       lastHumanEdit: Number(memory.lastHumanEdit || 0),
-      lastCompact: Number(memory.lastCompact || 0)
+      lastCompact: Number(memory.lastCompact || 0),
+      pendingTurns: Number(memory.pendingTurns || 0)
     }, null, 2))
   }
 
@@ -457,25 +558,33 @@ const createAgent = (ctx) => {
     }
   }
 
-  const pruneNotes = (items) => {
-    const profile = items.filter((row) => row.kind === 'profile')
-    const notes = items.filter((row) => row.kind !== 'profile')
-    if (notes.length <= 240) return [...profile, ...notes]
-    const live = notes.filter((row) => !row.superseded)
-    const dead = notes
+  const pruneCards = (items) => {
+    const now = Date.now()
+    const next = items.map(migrateMemoryItem)
+    const liveEpisodes = next
+      .filter((row) => row.kind === 'episode' && !row.superseded)
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+    liveEpisodes.slice(EPISODE_KEEP).forEach((row) => {
+      row.superseded = true
+      row.supersededAt = now
+    })
+    const keep = next.filter((row) => row.kind === 'identity' || row.kind === 'preference' || row.slot)
+    const rest = next.filter((row) => !keep.includes(row))
+    const live = rest.filter((row) => !row.superseded)
+    const dead = rest
       .filter((row) => row.superseded)
       .sort((a, b) => (b.ts || 0) - (a.ts || 0))
       .slice(0, 40)
-    if (live.length <= 200) return [...profile, ...live, ...dead]
+    if (live.length <= 80) return [...keep, ...live, ...dead]
     const keptLive = live
       .slice()
       .sort((a, b) => {
-        const sa = recencyWeight(a.ts, 30) + (a.humanEdit ? 0.5 : 0)
-        const sb = recencyWeight(b.ts, 30) + (b.humanEdit ? 0.5 : 0)
+        const sa = (a.humanEdit ? 2 : 0) + (a.kind === 'agreement' ? 1 : 0) + recencyWeight(a.ts, 60)
+        const sb = (b.humanEdit ? 2 : 0) + (b.kind === 'agreement' ? 1 : 0) + recencyWeight(b.ts, 60)
         return sa - sb
       })
-      .slice(-200)
-    return [...profile, ...keptLive, ...dead]
+      .slice(-80)
+    return [...keep, ...keptLive, ...dead]
   }
 
   const setCoreSlot = (memory, slot, text) => {
@@ -504,22 +613,27 @@ const createAgent = (ctx) => {
       }
       return '这条已经记过了'
     }
-    const item = {
+    const cardKind = normalizeCardKind(kind, slot)
+    const item = migrateMemoryItem({
       id: nid(),
-      kind: kind === 'profile' || slot ? 'profile' : 'note',
+      kind: cardKind,
       text: next.slice(0, 240),
+      title: String(opts.title || '').trim() || inferCardTitle(next, cardKind, slot),
+      summary: String(opts.summary || '').trim() || next.slice(0, 28),
+      tags: opts.tags,
       ts: Date.now(),
       superseded: false,
       slot,
-      humanEdit: Boolean(opts.human)
-    }
+      humanEdit: Boolean(opts.human),
+      dueAt: Number(opts.dueAt || 0) || undefined
+    })
     try {
-      const [vec] = await embedTexts(ctx.loadSettings(), [item.text])
+      const [vec] = await embedTexts(ctx.loadSettings(), [cardSearchText(item)])
       item.embedding = vec
     } catch {}
     for (const old of memory.items) {
       if (old.superseded || old.id === item.id) continue
-      if (slot && old.slot === slot && old.kind === 'profile') {
+      if (slot && old.slot === slot) {
         old.superseded = true
         old.supersededAt = Date.now()
         old.supersededBy = item.id
@@ -538,7 +652,7 @@ const createAgent = (ctx) => {
     memory.items.push(item)
     if (slot) setCoreSlot(memory, slot, item.text)
     if (opts.human) memory.lastHumanEdit = Date.now()
-    saveMemory({ ...memory, items: pruneNotes(memory.items) })
+    saveMemory({ ...memory, items: pruneCards(memory.items) })
     ctx.onMemoryChange?.()
     return '已记住：' + next.slice(0, 80)
   }
@@ -550,6 +664,12 @@ const createAgent = (ctx) => {
     const next = String(text || '').trim().slice(0, 240)
     if (!next) return getMemory()
     item.text = next
+    item.summary = String(opts.summary || next).trim().slice(0, 40)
+    if (opts.title) item.title = String(opts.title).trim().slice(0, 16)
+    else if (!item.title) item.title = inferCardTitle(next, item.kind, item.slot)
+    if (Array.isArray(opts.tags)) item.tags = opts.tags.map((tag) => String(tag || '').trim()).filter(Boolean).slice(0, 4)
+    if (Number(opts.dueAt)) item.dueAt = Number(opts.dueAt)
+    if (opts.kind) item.kind = normalizeCardKind(opts.kind, item.slot)
     item.ts = Date.now()
     item.superseded = false
     if (CORE_SLOTS.includes(opts.slot)) item.slot = opts.slot
@@ -558,7 +678,7 @@ const createAgent = (ctx) => {
       memory.lastHumanEdit = Date.now()
     }
     try {
-      const [vec] = await embedTexts(ctx.loadSettings(), [item.text])
+      const [vec] = await embedTexts(ctx.loadSettings(), [cardSearchText(item)])
       item.embedding = vec
     } catch {}
     if (item.slot) setCoreSlot(memory, item.slot, next)
@@ -604,7 +724,7 @@ const createAgent = (ctx) => {
     const memory = loadMemory()
     setCoreSlot(memory, slot, next)
     memory.lastHumanEdit = Date.now()
-    const live = memory.items.find((item) => item.slot === slot && item.kind === 'profile' && !item.superseded)
+    const live = memory.items.find((item) => item.slot === slot && !item.superseded)
     saveMemory(memory)
     if (live) {
       if (next) await updateMemory(live.id, next, { slot, human: true })
@@ -613,16 +733,6 @@ const createAgent = (ctx) => {
       await addMemory(next, 'profile', { slot, human: true })
     }
     return getMemory()
-  }
-
-  const memoryRankScore = (item, query, semantic) => {
-    const lexical = scoreText(item.text, query) / 12
-    const base = Math.max(lexical, Number(semantic) || 0)
-    const halfLife = item.kind === 'profile' ? 400 : 28
-    const recency = recencyWeight(item.ts, halfLife)
-    const importance = item.kind === 'profile' ? 1.2 : 1
-    const live = item.superseded && !wantsHistory(query) ? 0.12 : 1
-    return base * (0.4 + 0.6 * recency) * importance * live
   }
 
   const knowledgeDir = () => {
@@ -896,7 +1006,7 @@ const createAgent = (ctx) => {
   const recallMemory = async (query) => {
     const ranked = await recallHybrid(query, 6)
     if (!ranked.length) return '没有搜到相关记忆'
-    return ranked.map((item) => `- ${item.text}${item.superseded ? '（已被更新）' : ''}`).join('\n')
+    return ranked.map((item) => `${formatCardLine(item)}${item.superseded ? '（已被更新）' : ''}`).join('\n')
   }
 
   const loadReminders = () => {
@@ -933,6 +1043,7 @@ const createAgent = (ctx) => {
       return
     }
     const timer = setTimeout(() => fireReminder(item), Math.min(delay, 2147483647))
+    if (typeof timer.unref === 'function') timer.unref()
     reminderTimers.set(item.id, timer)
   }
 
@@ -974,11 +1085,7 @@ const createAgent = (ctx) => {
   const buildSystemPrompt = async (userText, notes) => {
     const memory = loadMemory()
     const coreText = formatCore(memory.core)
-    const profile = memory.items
-      .filter((item) => item.kind === 'profile' && !item.superseded)
-      .sort((a, b) => (b.ts || 0) - (a.ts || 0))
-      .slice(0, 8)
-    const related = await recallHybrid(userText, 6)
+    const live = memory.items.filter((item) => !item.superseded)
     const noteCount = listNoteFiles().length
     const hits = Array.isArray(notes) ? notes : []
     const lines = [
@@ -990,10 +1097,22 @@ const createAgent = (ctx) => {
       `现在是 ${formatNow()}。知识库里大约有 ${noteCount} 篇笔记。`
     ]
     if (coreText) lines.push('长期印象：\n' + coreText)
-    else if (profile.length) {
-      lines.push('长期印象：\n' + profile.map((item) => `- ${item.text}`).join('\n'))
+    if (live.length && live.length <= CATALOG_INJECT_LIMIT) {
+      lines.push('记忆卡片：\n' + live.map(formatCardLine).join('\n'))
+    } else if (live.length) {
+      const identity = live.filter((item) => item.kind === 'identity' || item.slot)
+      if (identity.length) lines.push('身份卡片：\n' + identity.map(formatCardLine).join('\n'))
+      const related = await recallHybrid(userText, 4)
+      const seen = new Set(identity.map((item) => item.id))
+      const extra = related.filter((item) => !seen.has(item.id))
+      if (wantsHistory(userText)) {
+        const episode = live
+          .filter((item) => item.kind === 'episode' && !seen.has(item.id))
+          .sort((a, b) => (b.ts || 0) - (a.ts || 0))[0]
+        if (episode && !extra.some((item) => item.id === episode.id)) extra.push(episode)
+      }
+      if (extra.length) lines.push('可能相关的记忆：\n' + extra.map(formatCardLine).join('\n'))
     }
-    if (related.length) lines.push('可能相关的记忆：\n' + related.map((item) => `- ${item.text}`).join('\n'))
     if (hits.length) lines.push('可能相关的笔记摘录（可能不完整）：\n' + formatNoteHits(hits))
     return lines.join('\n\n')
   }
@@ -1073,7 +1192,7 @@ const createAgent = (ctx) => {
 
   const dedupeSlotItems = (memory) => {
     for (const slot of CORE_SLOTS) {
-      const lives = memory.items.filter((item) => item.kind === 'profile' && item.slot === slot && !item.superseded)
+      const lives = memory.items.filter((item) => item.slot === slot && !item.superseded)
       if (lives.length <= 1) continue
       lives.sort((a, b) => (b.ts || 0) - (a.ts || 0))
       const keep = lives[0]
@@ -1089,10 +1208,21 @@ const createAgent = (ctx) => {
     const list = Array.isArray(ops) ? ops : []
     for (const op of list.slice(0, 6)) {
       const action = String(op.action || '').toLowerCase()
-      const text = String(op.text || '').trim()
+      const text = String(op.text || op.summary || '').trim()
       const slot = CORE_SLOTS.includes(op.slot) ? op.slot : ''
-      const kind = op.kind === 'note' && !slot ? 'note' : 'profile'
+      const kind = normalizeCardKind(op.kind, slot)
       const id = String(op.id || '')
+      const tags = Array.isArray(op.tags) ? op.tags : []
+      const title = String(op.title || '').trim()
+      const summary = String(op.summary || '').trim()
+      const dueAt = Date.parse(String(op.due || ''))
+      const opts = {
+        slot,
+        title,
+        summary,
+        tags,
+        dueAt: Number.isFinite(dueAt) ? dueAt : 0
+      }
       if (action === 'delete') {
         if (id) removeMemory(id)
         else if (text) forgetMemory(text)
@@ -1102,7 +1232,7 @@ const createAgent = (ctx) => {
       if (action !== 'add' && action !== 'update') continue
       if (!text) continue
       if (action === 'update' && id && loadMemory().items.some((item) => item.id === id)) {
-        await updateMemory(id, text, { slot })
+        await updateMemory(id, text, opts)
         if (slot) {
           const memory = loadMemory()
           setCoreSlot(memory, slot, text)
@@ -1111,15 +1241,15 @@ const createAgent = (ctx) => {
         }
         continue
       }
-      await addMemory(text, kind, { slot })
+      await addMemory(text, kind, opts)
     }
     const memory = loadMemory()
     dedupeSlotItems(memory)
     if (!formatCore(memory.core)) {
-      const liveProf = memory.items.filter((item) => item.kind === 'profile' && !item.superseded)
-      if (liveProf.length) memory.core.extra = liveProf.slice(0, 4).map((item) => item.text).filter(Boolean)
+      const liveProf = memory.items.filter((item) => (item.kind === 'identity' || item.slot) && !item.superseded)
+      if (liveProf.length) memory.core.extra = liveProf.slice(0, 4).map((item) => item.summary || item.text).filter(Boolean)
     }
-    saveMemory(memory)
+    saveMemory({ ...memory, items: pruneCards(memory.items) })
     ctx.onMemoryChange?.()
   }
 
@@ -1135,7 +1265,9 @@ const createAgent = (ctx) => {
     const catalog = memory.items.map((item) => ({
       id: item.id,
       kind: item.kind,
-      text: item.text,
+      title: item.title,
+      tags: item.tags || [],
+      summary: item.summary || item.text,
       slot: item.slot || '',
       superseded: Boolean(item.superseded),
       humanEdit: Boolean(item.humanEdit)
@@ -1152,7 +1284,7 @@ const createAgent = (ctx) => {
           { role: 'system', content: COMPACT_PROMPT },
           {
             role: 'user',
-            content: `原因：${reason}\n当前核心：${JSON.stringify(memory.core)}\n条目：${JSON.stringify(catalog).slice(0, 8000)}`
+            content: `原因：${reason}\n当前核心：${JSON.stringify(memory.core)}\n卡片目录：${JSON.stringify(catalog).slice(0, 8000)}`
           }
         ],
         ...requestExtras(model)
@@ -1178,52 +1310,99 @@ const createAgent = (ctx) => {
     return getMemory()
   }
 
+  const catalogForLlm = (memory) => memory.items
+    .filter((item) => !item.superseded)
+    .map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      title: item.title,
+      tags: item.tags || [],
+      summary: item.summary || item.text,
+      slot: item.slot || '',
+      humanEdit: Boolean(item.humanEdit)
+    }))
+
+  const recentTranscript = (limit = 12) => loadChat()
+    .slice(-limit)
+    .map((row) => `${row.role === 'user' ? '用户' : '桌宠'}：${String(row.content || '').slice(0, 240)}`)
+    .join('\n')
+
+  let consolidating = false
+  let consolidateAgain = false
   const reconcileMemories = async (userText, reply, meta = {}) => {
-    if (!userText || /刚才没说成/.test(String(reply || ''))) return
+    if (/刚才没说成/.test(String(reply || ''))) return
     const settings = ctx.loadSettings()
     if (!settings.apiKey) return
-    const baseUrl = normalizeBaseUrl(settings.baseUrl)
-    const model = normalizeModel(baseUrl, settings.model)
-    const usedTools = Array.isArray(meta.usedTools) ? meta.usedTools : []
-    const usedNotes = usedTools.includes('search_notes') || usedTools.includes('read_note')
-    const noteText = String(meta.noteText || '').trim().slice(0, 1200)
+    if (consolidating) {
+      consolidateAgain = true
+      return
+    }
+    consolidating = true
+    try {
+      do {
+        consolidateAgain = false
+        const baseUrl = normalizeBaseUrl(settings.baseUrl)
+        const model = normalizeModel(baseUrl, settings.model)
+        const usedTools = Array.isArray(meta.usedTools) ? meta.usedTools : []
+        const usedNotes = usedTools.includes('search_notes') || usedTools.includes('read_note')
+        const noteText = String(meta.noteText || '').trim().slice(0, 800)
+        const memory = loadMemory()
+        const extra = [
+          usedNotes ? '本轮翻过笔记。笔记里出现的内容不要写成记忆。' : '若近期对话在翻笔记，笔记内容和验收点不要写成记忆卡。',
+          noteText ? `本轮见到的笔记摘录：\n${noteText}` : '',
+          usedTools.length ? `本轮用过的工具：${usedTools.join('、')}` : '',
+          `当前核心印象：${JSON.stringify(memory.core)}`,
+          `卡片目录：${JSON.stringify(catalogForLlm(memory)).slice(0, 3500)}`,
+          `近期对话：\n${recentTranscript(12)}`,
+          userText ? `最近一句用户：${userText}` : '',
+          reply ? `最近一句桌宠：${String(reply).slice(0, 400)}` : ''
+        ].filter(Boolean).join('\n')
+        const result = await completeOnce({
+          url: toCompletionsUrl(baseUrl),
+          apiKey: settings.apiKey,
+          payload: {
+            model,
+            temperature: 1,
+            max_tokens: 500,
+            stream: false,
+            messages: [
+              { role: 'system', content: EXTRACT_PROMPT },
+              { role: 'user', content: extra }
+            ],
+            ...requestExtras(model)
+          }
+        })
+        const data = parseJsonObject(result.content)
+        const ops = Array.isArray(data.ops) ? data.ops : []
+        await applyMemoryOps(ops)
+        const saved = loadMemory()
+        saved.pendingTurns = 0
+        saveMemory(saved)
+        const liveRest = saved.items.filter((item) => !item.superseded && item.kind !== 'identity' && item.kind !== 'preference').length
+        if (liveRest >= 80) await compactMemories('pressure')
+      } while (consolidateAgain)
+    } finally {
+      consolidating = false
+    }
+  }
+
+  const flushMemories = async (reason = 'flush') => {
     const memory = loadMemory()
-    const live = memory.items
-      .filter((item) => !item.superseded)
-      .map((item) => ({ id: item.id, kind: item.kind, text: item.text, slot: item.slot || '', humanEdit: Boolean(item.humanEdit) }))
-    const extra = [
-      usedNotes ? '本轮翻过笔记。笔记里出现的内容不要写成记忆。' : '本轮没有翻笔记。',
-      noteText ? `本轮见到的笔记摘录：\n${noteText}` : '',
-      usedTools.length ? `本轮用过的工具：${usedTools.join('、')}` : '',
-      `当前核心印象：${JSON.stringify(memory.core)}`,
-      `现行记忆：${JSON.stringify(live).slice(0, 4000)}`,
-      `用户：${userText}`,
-      `桌宠：${String(reply || '').slice(0, 800)}`
-    ].filter(Boolean).join('\n')
-    const result = await completeOnce({
-      url: toCompletionsUrl(baseUrl),
-      apiKey: settings.apiKey,
-      payload: {
-        model,
-        temperature: 1,
-        max_tokens: 400,
-        stream: false,
-        messages: [
-          { role: 'system', content: EXTRACT_PROMPT },
-          { role: 'user', content: extra }
-        ],
-        ...requestExtras(model)
-      }
-    })
-    const data = parseJsonObject(result.content)
-    const ops = Array.isArray(data.ops)
-      ? data.ops
-      : Array.isArray(data.facts)
-        ? data.facts.map((fact) => ({ action: 'add', text: fact.text, kind: fact.kind, slot: fact.slot || '' }))
-        : []
-    await applyMemoryOps(ops)
-    const notesLive = loadMemory().items.filter((item) => item.kind === 'note' && !item.superseded).length
-    if (notesLive >= 80) await compactMemories('pressure')
+    const pending = Number(memory.pendingTurns || 0)
+    if (!pending) return getMemory()
+    if (reason !== 'close' && reason !== 'immediate' && pending < MEMORY_FLUSH_TURNS) return getMemory()
+    await reconcileMemories('', '', { usedTools: [] })
+    return getMemory()
+  }
+
+  const scheduleMemory = (userText, reply, meta) => {
+    const memory = loadMemory()
+    memory.pendingTurns = Number(memory.pendingTurns || 0) + 1
+    saveMemory(memory)
+    const immediate = needsImmediateMemory(userText)
+    if (immediate || memory.pendingTurns >= MEMORY_FLUSH_TURNS) {
+      reconcileMemories(userText, reply, meta).catch((error) => console.error('[memory-extract]', error.message))
+    }
   }
 
   const completeOnce = async ({ url, apiKey, payload, onDelta }) => {
@@ -1514,9 +1693,9 @@ const createAgent = (ctx) => {
       saveChat(messages.slice(-80))
       const next = { messages: loadChat(), pending: false }
       onUpdate?.(next)
-      reconcileMemories(content, reply, { usedTools, noteText }).catch((error) => console.error('[memory-extract]', error.message))
+      scheduleMemory(content, reply, { usedTools, noteText })
       ensureIndex().catch((error) => console.error('[knowledge-index]', error.message))
-      return { ...next, reply, usedPetAction }
+      return { ...next, reply, usedPetAction, usedTools }
     } catch (error) {
       const fail = `刚才没说成：${error.message}`
       messages.push({ role: 'assistant', content: fail, ts: Date.now() })
@@ -1537,6 +1716,7 @@ const createAgent = (ctx) => {
     forgetMemory,
     recallMemory,
     compactMemories,
+    flushMemories,
     updateCore,
     searchNotes,
     readNote,
@@ -1588,5 +1768,13 @@ module.exports = {
   DEFAULT_SETTINGS,
   normalizeBaseUrl,
   normalizeModel,
-  createAgent
+  createAgent,
+  needsImmediateMemory,
+  normalizeCardKind,
+  migrateMemoryItem,
+  cardRecencyMultiplier,
+  memoryRankScore,
+  formatCardLine,
+  CATALOG_INJECT_LIMIT,
+  CARD_KINDS
 }
